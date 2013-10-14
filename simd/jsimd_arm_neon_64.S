@@ -1532,3 +1532,350 @@ asm_function jsimd_idct_2x2_neon
 .endfunc
 
 .purgem idct_helper
+
+/*****************************************************************************/
+
+/*
+ * jsimd_ycc_extrgb_convert_neon
+ * jsimd_ycc_extbgr_convert_neon
+ * jsimd_ycc_extrgbx_convert_neon
+ * jsimd_ycc_extbgrx_convert_neon
+ * jsimd_ycc_extxbgr_convert_neon
+ * jsimd_ycc_extxrgb_convert_neon
+ *
+ * Colorspace conversion YCbCr -> RGB
+ */
+
+
+.macro do_load size
+    .if \size == 8
+        ld1  {v4.8b}, [U],8
+        ld1  {v5.8b}, [V],8
+        ld1  {v0.8b}, [Y],8
+	prfm PLDL1KEEP,[U,#64]
+        prfm PLDL1KEEP,[V,#64]
+        prfm PLDL1KEEP,[Y,#64]
+    .elseif \size == 4
+        ld1  {v4.b}[0], [U]
+        ld1  {v4.b}[1], [U]
+        ld1  {v4.b}[2], [U]
+        ld1  {v4.b}[3], [U]
+        ld1  {v5.b}[0], [V]
+        ld1  {v5.b}[1], [V],1
+        ld1  {v5.b}[2], [V],1
+        ld1  {v5.b}[3], [V],1
+        ld1  {v0.b}[0], [Y],1
+        ld1  {v0.b}[1], [Y],1
+        ld1  {v0.b}[2], [Y],1
+        ld1  {v0.b}[3], [Y],1
+    .elseif \size == 2
+        ld1  {v4.b}[4], [U],1
+        ld1  {v4.b}[5], [U],1
+        ld1  {v5.b}[4], [V],1
+        ld1  {v5.b}[5], [V],1
+        ld1  {v0.b}[4], [Y],1
+        ld1  {v0.b}[5], [Y],1
+    .elseif \size == 1
+        ld1  {v4.b}[6], [U],1
+        ld1  {v5.b}[6], [V],1
+        ld1  {v0.b}[6], [Y],1
+    .else
+        .error unsupported macroblock size
+    .endif
+.endm
+
+.macro do_store bpp, size
+    .if \bpp == 24
+        .if \size == 8
+            st3  {v10.8b, v11.8b, v12.8b}, [RGB],24
+        .elseif \size == 4
+            st3  {v10.b, v11.b, v12.b}[0], [RGB],3
+            st3  {v10.b, v11.b, v12.b}[1], [RGB],3
+            st3  {v10.b, v11.b, v12.b}[2], [RGB],3
+            st3  {v10.b, v11.b, v12.b}[3], [RGB],3
+        .elseif \size == 2
+            st3  {v10.b, v11.b, v12.b}[4], [RGB],3
+            st3  {v10.b, v11.b, v12.b}[4], [RGB],3
+        .elseif \size == 1
+            st3  {v10.b, v11.b, v12.b}[6], [RGB],3
+        .else
+            .error unsupported macroblock size
+        .endif
+    .elseif \bpp == 32
+        .if \size == 8
+            st4  {v10.8b, v11.8b, v12.8b, v13.8b}, [RGB],32
+        .elseif \size == 4
+            st4  {v10.b, v11.b, v12.b, v13.b}[0], [RGB],4
+            st4  {v10.b, v11.b, v12.b, v13.b}[1], [RGB],4
+            st4  {v10.b, v11.b, v12.b, v13.b}[2], [RGB],4
+            st4  {v10.b, v11.b, v12.b, v13.b}[3], [RGB],4
+        .elseif \size == 2
+            st4  {v10.b, v11.b, v12.b, v13.b}[4], [RGB],4
+            st4  {v10.b, v11.b, v12.b, v13.b}[5], [RGB],4
+        .elseif \size == 1
+            st4  {v10.b, v11.b, v12.b, v13.b}[6], [RGB],4
+        .else
+            .error unsupported macroblock size
+        .endif
+    .else
+        .error unsupported bpp
+    .endif
+.endm
+#ifdef RTSM_SQSHRN_SIM_ISSUE
+.macro generate_jsimd_ycc_rgb_convert_neon colorid, bpp, r_offs,rsize, g_offs,gsize, b_offs,bsize,defsize
+#else
+.macro generate_jsimd_ycc_rgb_convert_neon colorid, bpp, r_offs,rsize, g_offs,gsize, b_offs,bsize
+#endif
+/*
+ * 2 stage pipelined YCbCr->RGB conversion
+ */
+
+.macro do_yuv_to_rgb_stage1
+    uaddw        v6.8h, v2.8h, v4.8b     /* q3 = u - 128 */
+    uaddw        v8.8h, v2.8h, v5.8b     /* q2 = v - 128 */
+    smull        v20.4s, v6.4h, v1.4h[1] /* multiply by -11277 */
+    smlal        v20.4s, v8.4h, v1.4h[2] /* multiply by -23401 */
+    smull2       v22.4s, v6.8h, v1.4h[1] /* multiply by -11277 */
+    smlal2       v22.4s, v8.8h, v1.4h[2] /* multiply by -23401 */
+    smull        v24.4s, v8.4h, v1.4h[0] /* multiply by 22971 */
+    smull2       v26.4s, v8.8h, v1.4h[0] /* multiply by 22971 */
+    smull        v28.4s, v6.4h, v1.4h[3] /* multiply by 29033 */
+    smull2       v30.4s, v6.8h, v1.4h[3] /* multiply by 29033 */
+.endm
+
+.macro do_yuv_to_rgb_stage2
+    rshrn        v20.4h, v20.4s, #15
+    rshrn2       v20.8h, v22.4s, #15
+    rshrn        v24.4h, v24.4s, #14
+    rshrn2       v24.8h, v26.4s, #14
+    rshrn        v28.4h, v28.4s, #14
+    rshrn2       v28.8h, v30.4s, #14
+    uaddw        v20.8h, v20.8h, v0.8b
+    uaddw        v24.8h, v24.8h, v0.8b
+    uaddw        v28.8h, v28.8h, v0.8b
+#ifdef RTSM_SQSHRN_SIM_ISSUE
+    sqxtun       v1\g_offs\defsize, v20.8h
+    sqxtun       v1\r_offs\defsize, v24.8h
+    sqxtun       v1\b_offs\defsize, v28.8h
+
+#else
+    sqxtun       v1\g_offs\gsize, v20.4s
+    sqxtun       v1\r_offs\rsize, v24.4s
+    sqxtun       v1\b_offs\bsize, v28.4s
+#endif
+.endm
+
+.macro do_yuv_to_rgb_stage2_store_load_stage1
+    ld1          {v4.8b}, [U],8
+    rshrn        v20.4h, v20.4s, #15
+    rshrn2       v20.8h, v22.4s, #15
+    rshrn        v24.4h, v24.4s, #14
+    rshrn2       v24.8h, v26.4s, #14
+    rshrn        v28.4h, v28.4s, #14
+    ld1          {v5.8b}, [V],8
+    rshrn2       v28.8h, v30.4s, #14
+    uaddw        v20.8h, v20.8h, v0.8b
+    uaddw        v24.8h, v24.8h, v0.8b
+    uaddw        v28.8h, v28.8h, v0.8b
+#ifdef RTSM_SQSHRN_SIM_ISSUE
+    sqxtun       v1\g_offs\defsize, v20.8h
+#else
+    sqxtun       v1\g_offs\gsize, v20.4s
+#endif
+    ld1          {v0.8b}, [Y],8
+#ifdef RTSM_SQSHRN_SIM_ISSUE
+    sqxtun       v1\r_offs\defsize, v24.8h
+#else
+    sqxtun       v1\r_offs\rsize, v24.4s
+#endif
+    prfm         PLDL1KEEP,[U,#64]
+    prfm         PLDL1KEEP,[V,#64]
+    prfm         PLDL1KEEP,[Y,#64]
+#ifdef RTSM_SQSHRN_SIM_ISSUE
+    sqxtun       v1\b_offs\defsize, v28.8h
+#else
+    sqxtun       v1\b_offs\gsize, v28.4s
+#endif
+    uaddw        v6.8h, v2.8h, v4.8b     /* v6.16b = u - 128 */
+    uaddw        v8.8h, v2.8h, v5.8b     /* q2 = v - 128 */
+    do_store     \bpp, 8
+    smull        v20.4s, v6.4h, v1.4h[1] /* multiply by -11277 */
+    smlal        v20.4s, v8.4h, v1.4h[2] /* multiply by -23401 */
+    smull2       v22.4s, v6.8h, v1.4h[1] /* multiply by -11277 */
+    smlal2       v22.4s, v8.8h, v1.4h[2] /* multiply by -23401 */
+    smull        v24.4s, v8.4h, v1.4h[0] /* multiply by 22971 */
+    smull2       v26.4s, v8.8h, v1.4h[0] /* multiply by 22971 */
+    smull        v28.4s, v6.4h, v1.4h[3] /* multiply by 29033 */
+    smull2       v30.4s, v6.8h, v1.4h[3] /* multiply by 29033 */
+.endm
+
+.macro do_yuv_to_rgb
+    do_yuv_to_rgb_stage1
+    do_yuv_to_rgb_stage2
+.endm
+
+/* Apple gas crashes on adrl, work around that by using adr.
+ * But this requires a copy of these constants for each function.
+ */
+
+.balign 16
+jsimd_ycc_\colorid\()_neon_consts:
+    .short          0,      0,     0,      0
+    .short          22971, -11277, -23401, 29033
+    .short          -128,  -128,   -128,   -128
+    .short          -128,  -128,   -128,   -128
+
+asm_function jsimd_ycc_\colorid\()_convert_neon
+    OUTPUT_WIDTH    .req x0
+    INPUT_BUF       .req x1
+    INPUT_ROW       .req x2
+    OUTPUT_BUF      .req x3
+    NUM_ROWS        .req x4
+
+    INPUT_BUF0      .req x5
+    INPUT_BUF1      .req x6
+    INPUT_BUF2      .req INPUT_BUF
+
+    RGB             .req x7
+    Y               .req x8
+    U               .req x9
+    V               .req x10
+    N               .req x15
+
+    /* Load constants to d1, d2, d3 (v0.4h is just used for padding) */
+    adr             x15, jsimd_ycc_\colorid\()_neon_consts
+    ld1             {v0.4h, v1.4h},[x15],16
+    ld1             {v2.8h}, [x15]
+
+    /* Save ARM registers and handle input arguments */
+    /*push          {x4, x5, x6, x7, x8, x9, x10, x30}*/
+    stp             x4,	   x5,	[sp,-16]!
+    stp             x6,	   x7,	[sp,-16]!
+    stp             x8,	   x9,	[sp,-16]!
+    stp             x10,   x30, [sp,-16]!
+    ldr             INPUT_BUF0, [INPUT_BUF]
+    ldr             INPUT_BUF1, [INPUT_BUF,8]
+    ldr             INPUT_BUF2, [INPUT_BUF,16]
+    .unreq          INPUT_BUF
+
+    /* Save NEON registers */
+    /*vpush         {v8.4h-v15.4h}*/
+    sub             sp,			sp, 	#32
+    st1             {v8.4h-v11.4h},	[sp]
+    sub             sp,			sp,	#32
+    st1             {v12.4h-v15.4h},	[sp]
+
+    /* Initially set v10, v11.4h, v12.8b, d13 to 0xFF */
+    movi            v10.16b, #255
+    movi            v12.16b, #255
+
+    /* Outer loop over scanlines */
+    cmp             NUM_ROWS, #1
+    blt             9f
+0:
+    lsl             x16, INPUT_ROW,#3
+    ldr             Y, [INPUT_BUF0,x16]
+    ldr             U, [INPUT_BUF1,x16]
+    mov             N, OUTPUT_WIDTH
+    ldr             V, [INPUT_BUF2,x16]
+    add             INPUT_ROW, INPUT_ROW, #1
+    ldr             RGB, [OUTPUT_BUF], #8
+
+    /* Inner loop over pixels */
+    subs            N, N, #8
+    blt             3f
+    do_load         8
+    do_yuv_to_rgb_stage1
+    subs            N, N, #8
+    blt             2f
+1:
+    do_yuv_to_rgb_stage2_store_load_stage1
+    subs            N, N, #8
+    bge             1b
+2:
+    do_yuv_to_rgb_stage2
+    do_store        \bpp, 8
+    tst             N, #7
+    beq             8f
+3:
+    tst             N, #4
+    beq             3f
+    do_load         4
+3:
+    tst             N, #2
+    beq             4f
+    do_load         2
+4:
+    tst             N, #1
+    beq             5f
+    do_load         1
+5:
+    do_yuv_to_rgb
+    tst             N, #4
+    beq             6f
+    do_store        \bpp, 4
+6:
+    tst             N, #2
+    beq             7f
+    do_store        \bpp, 2
+7:
+    tst             N, #1
+    beq             8f
+    do_store        \bpp, 1
+8:
+    subs            NUM_ROWS, NUM_ROWS, #1
+    bgt             0b
+9:
+    /* Restore all registers and return */
+   /* vpop         {v8.4h-v15.4h}*/
+    ld1            {v12.4h-v15.4h},	[sp], #32
+    ld1            {v8.4h-v11.4h},	[sp], #32
+   /* pop          {r4, r5, r6, r7, r8, r9, r10, pc}*/
+    ldp            x10,  x30, 	[sp],#16
+    ldp            x8,   x9,   [sp],#16
+    ldp            x6,	  x5,   [sp],#16
+    ldp            x4,	  x5,   [sp],#16
+    br             x30
+    .unreq         OUTPUT_WIDTH
+    .unreq         INPUT_ROW
+    .unreq         OUTPUT_BUF
+    .unreq         NUM_ROWS
+    .unreq         INPUT_BUF0
+    .unreq         INPUT_BUF1
+    .unreq         INPUT_BUF2
+    .unreq         RGB
+    .unreq         Y
+    .unreq         U
+    .unreq         V
+    .unreq         N
+.endfunc
+
+.purgem do_yuv_to_rgb
+.purgem do_yuv_to_rgb_stage1
+.purgem do_yuv_to_rgb_stage2
+.purgem do_yuv_to_rgb_stage2_store_load_stage1
+.endm
+
+/* RTSM simulator fix integer saturation works on 8b boundry add a new parameter
+ * as a workaround for the simulator fix
+ */
+#ifdef RTSM_SQSHRN_SIM_ISSUE
+/*--------------------------------- id ----- bpp R  rsize  G  gsize   B bsize defsize   */
+generate_jsimd_ycc_rgb_convert_neon extrgb,  24, 0, .4h,    1, .4h,   2, .4h,   .8b
+generate_jsimd_ycc_rgb_convert_neon extbgr,  24, 2, .4h,    1, .4h,   0, .4h,   .8b
+generate_jsimd_ycc_rgb_convert_neon extrgbx, 32, 0, .4h,    1, .4h,   2, .4h,   .8b
+generate_jsimd_ycc_rgb_convert_neon extbgrx, 32, 2, .4h,    1, .4h,   0, .4h,   .8b
+generate_jsimd_ycc_rgb_convert_neon extxbgr, 32, 3, .4h,    2, .4h,   1, .4h,   .8b
+generate_jsimd_ycc_rgb_convert_neon extxrgb, 32, 1, .4h,    2, .4h,   3, .4h,   .8b
+#else
+/*--------------------------------- id ----- bpp R  rsize   G  gsize   B bsize  */
+generate_jsimd_ycc_rgb_convert_neon extrgb,  24, 0, .4h,    1, .4h,     2, .4h
+generate_jsimd_ycc_rgb_convert_neon extbgr,  24, 2, .4h,    1, .4h,     0, .4h
+generate_jsimd_ycc_rgb_convert_neon extrgbx, 32, 0, .4h,    1, .4h,     2, .4h
+generate_jsimd_ycc_rgb_convert_neon extbgrx, 32, 2, .4h,    1, .4h,     0, .4h
+generate_jsimd_ycc_rgb_convert_neon extxbgr, 32, 3, .4h,    2, .4h,     1, .4h
+generate_jsimd_ycc_rgb_convert_neon extxrgb, 32, 1, .4h,    2, .4h,     3, .4h
+#endif
+
+.purgem do_load
+.purgem do_store
