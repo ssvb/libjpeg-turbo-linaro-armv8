@@ -28,6 +28,7 @@
 #include <ctype.h>
 
 static unsigned int simd_support = ~0;
+#define __ARMV8_NEON_SIMULATION__
 
 #if defined(__linux__) || defined(ANDROID) || defined(__ANDROID__)
 
@@ -181,6 +182,8 @@ jsimd_rgb_ycc_convert (j_compress_ptr cinfo,
                        JSAMPARRAY input_buf, JSAMPIMAGE output_buf,
                        JDIMENSION output_row, int num_rows)
 {
+
+#if !defined( __ARMV8_NEON_SIMULATION__ )
   void (*neonfct)(JDIMENSION, JSAMPARRAY, JSAMPIMAGE, JDIMENSION, int);
 
   switch(cinfo->in_color_space)
@@ -215,6 +218,7 @@ jsimd_rgb_ycc_convert (j_compress_ptr cinfo,
   if (simd_support & JSIMD_ARM_NEON)
     neonfct(cinfo->image_width, input_buf,
         output_buf, output_row, num_rows);
+#endif
 }
 
 GLOBAL(void)
@@ -337,7 +341,9 @@ GLOBAL(int)
 jsimd_can_h2v1_fancy_upsample (void)
 {
   init_simd();
-
+#if  defined(__ARMV8_NEON_SIMULATION__)
+  return 0;
+#endif
   /* The code is optimised for these values only */
   if (BITS_IN_JSAMPLE != 8)
     return 0;
@@ -364,9 +370,11 @@ jsimd_h2v1_fancy_upsample (j_decompress_ptr cinfo,
                            JSAMPARRAY input_data,
                            JSAMPARRAY * output_data_ptr)
 {
+#if !defined(__ARMV8_NEON_SIMULATION__)
   if (simd_support & JSIMD_ARM_NEON)
     jsimd_h2v1_fancy_upsample_neon(cinfo->max_v_samp_factor,
         compptr->downsampled_width, input_data, output_data_ptr);
+#endif
 }
 
 GLOBAL(int)
@@ -434,8 +442,10 @@ GLOBAL(void)
 jsimd_convsamp (JSAMPARRAY sample_data, JDIMENSION start_col,
                 DCTELEM * workspace)
 {
+#if !defined(__ARMV8_NEON_SIMULATION__)
   if (simd_support & JSIMD_ARM_NEON)
     jsimd_convsamp_neon(sample_data, start_col, workspace);
+#endif
 }
 
 GLOBAL(void)
@@ -485,8 +495,10 @@ jsimd_fdct_islow (DCTELEM * data)
 GLOBAL(void)
 jsimd_fdct_ifast (DCTELEM * data)
 {
+#if !defined (__ARMV8_NEON_SIMULATION__)
   if (simd_support & JSIMD_ARM_NEON)
     jsimd_fdct_ifast_neon(data);
+#endif
 }
 
 GLOBAL(void)
@@ -498,7 +510,9 @@ GLOBAL(int)
 jsimd_can_quantize (void)
 {
   init_simd();
-
+#if  defined(__ARMV8_NEON_SIMULATION__)
+  return 0;
+#endif
   /* The code is optimised for these values only */
   if (DCTSIZE != 8)
     return 0;
@@ -525,8 +539,10 @@ GLOBAL(void)
 jsimd_quantize (JCOEFPTR coef_block, DCTELEM * divisors,
                 DCTELEM * workspace)
 {
+#if  !defined(__ARMV8_NEON_SIMULATION__)
   if (simd_support & JSIMD_ARM_NEON)
     jsimd_quantize_neon(coef_block, divisors, workspace);
+#endif
 }
 
 GLOBAL(void)
