@@ -58,6 +58,12 @@ libsimd_la_SOURCES = jsimd_arm.c jsimd_arm_neon.S
 
 endif
 
+if SIMD_ARM_64
+
+libsimd_la_SOURCES = jsimd_arm.c jsimd_arm_neon_64.S
+
+endif
+
 AM_CPPFLAGS = -I$(top_srcdir) 
 
 .asm.lo:
