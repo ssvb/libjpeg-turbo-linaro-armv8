@@ -769,3 +769,320 @@ asm_function jsimd_idct_islow_neon
     .unreq          ROW7L
     .unreq          ROW7R
 .endfunc
+
+
+/******************************************************************************
+*
+* jsimd_idct_ifast_neon
+*
+******************************************************************************/
+
+
+
+/*
+ * jsimd_idct_ifast_neon
+ *
+ * This function contains a fast, not so accurate integer implementation of
+ * the inverse DCT (Discrete Cosine Transform). It uses the same calculations
+ * and produces exactly the same output as IJG's original 'jpeg_idct_ifast'
+ * function from jidctfst.c
+ *
+ * Normally 1-D AAN DCT needs 5 multiplications and 29 additions.
+ * But in ARM NEON case some extra additions are required because VQDMULH
+ * instruction can't handle the constants larger than 1. So the expressions
+ * like "x * 1.082392200" have to be converted to "x * 0.082392200 + x",
+ * which introduces an extra addition. Overall, there are 6 extra additions
+ * per 1-D IDCT pass, totalling to 5 VQDMULH and 35 VADD/VSUB instructions.
+ */
+
+#define XFIX_1_082392200 v0.4h[0]
+#define XFIX_1_414213562 v0.4h[1]
+#define XFIX_1_847759065 v0.4h[2]
+#define XFIX_2_613125930 v0.4h[3]
+
+.balign 16
+jsimd_idct_ifast_neon_consts:
+    .short (277 * 128 - 256 * 128) /* XFIX_1_082392200 */
+    .short (362 * 128 - 256 * 128) /* XFIX_1_414213562 */
+    .short (473 * 128 - 256 * 128) /* XFIX_1_847759065 */
+    .short (669 * 128 - 512 * 128) /* XFIX_2_613125930 */
+
+asm_function jsimd_idct_ifast_neon
+
+    DCT_TABLE       .req x0
+    COEF_BLOCK      .req x1
+    OUTPUT_BUF      .req x2
+    OUTPUT_COL      .req x3
+    TMP1            .req x0
+    TMP2            .req x1
+    TMP3            .req x2
+    TMP4            .req x15
+
+    /* Load and dequantize coefficients into NEON registers
+     * with the following allocation:
+     *       0 1 2 3 | 4 5 6 7
+     *      ---------+--------
+     *   0 | d16     | d17     ( v8.8h  )
+     *   1 | d18     | d19     ( v9.8h  )
+     *   2 | d20     | d21     ( v10.8h )
+     *   3 | d22     | d23     ( v11.8h )
+     *   4 | d24     | d25     ( v12.8h )
+     *   5 | d26     | d27     ( v13.8h )
+     *   6 | d28     | d29     ( v14.8h )
+     *   7 | d30     | d31     ( v15.8h )
+     */
+    adr		x15, jsimd_idct_ifast_neon_consts
+    ld1         {v8.8h,v9.8h},[COEF_BLOCK],32
+    ld1         {v0.8h,v1.8h},[DCT_TABLE],32
+    ld1         {v10.8h,v11.8h},[COEF_BLOCK],32
+    mul      	 v8.8h,  v8.8h,  v0.8h
+    ld1         {v2.8h,v3.8h},[DCT_TABLE],32
+    mul         v9.8h,v9.8h,v1.8h
+    ld1         {v12.8h, v13.8h}, [COEF_BLOCK],32
+    mul         v10.8h,  v10.8h,  v2.8h
+    ld1         {v0.8h,  v1.8h}, [DCT_TABLE],32
+    mul         v11.8h, v11.8h, v3.8h
+    ld1         {v14.8h,  v15.8h}, [COEF_BLOCK],32
+    mul        	v12.8h, v12.8h, v0.8h
+    ld1       	{v2.8h, v3.8h}, [DCT_TABLE],32
+    mul        	v14.8h, v14.8h, v2.8h
+    mul        	v13.8h, v13.8h, v1.8h
+    ld1         {v0.4h}, [x15] /* load constants */
+
+    mul        	v15.8h, v15.8h, v3.8h
+
+   /* vpush      {v4.8h-v6.8h} */       /* save NEON registers */
+
+    sub    	sp,sp,#32
+    st1    	{v4.8h-v5.8h}, [sp]/* save NEON registers */
+    sub    	sp,sp,#16
+    st1    	{v6.8h},[sp]
+    /* 1-D IDCT, pass 1 */
+    sub		v2.8h,  v10.8h, v14.8h
+    add         v14.8h, v10.8h, v14.8h
+    sub         v1.8h,  v11.8h, v13.8h
+    add         v13.8h, v11.8h, v13.8h
+    sub         v5.8h, v9.8h, v15.8h
+    add         v15.8h, v9.8h, v15.8h
+    sqdmulh     v4.8h,  v2.8h,  XFIX_1_414213562
+    sqdmulh     v6.8h,  v1.8h,  XFIX_2_613125930
+    add         v3.8h,  v1.8h,  v1.8h
+    sub         v1.8h,  v5.8h,  v1.8h
+    add         v10.8h, v2.8h,  v4.8h
+    sqdmulh     v4.8h,  v1.8h,  XFIX_1_847759065
+    sub   	v2.8h,  v15.8h, v13.8h
+    add    	v3.8h,  v3.8h,  v6.8h
+    sqdmulh	v6.8h,  v2.8h,  XFIX_1_414213562
+    add         v1.8h,  v1.8h,  v4.8h
+    sqdmulh     v4.8h,  v5.8h,  XFIX_1_082392200
+    sub         v10.8h, v10.8h, v14.8h
+    add         v2.8h,  v2.8h,  v6.8h
+    sub         v6.8h,  v8.8h,  v12.8h
+    add         v12.8h, v8.8h,  v12.8h
+    add         v9.8h,  v5.8h,  v4.8h
+    add         v5.8h,  v6.8h,  v10.8h
+    sub         v10.8h, v6.8h,  v10.8h
+    add         v6.8h,  v15.8h, v13.8h
+    add         v8.8h,  v12.8h, v14.8h
+    sub         v3.8h,  v6.8h,  v3.8h
+    sub         v12.8h, v12.8h, v14.8h
+    sub         v3.8h,  v3.8h,  v1.8h
+    sub         v1.8h,  v9.8h,  v1.8h
+    add         v2.8h,  v3.8h,  v2.8h
+    sub         v15.8h, v8.8h,  v6.8h
+    add         v1.8h,  v1.8h,  v2.8h
+    add         v8.8h,  v8.8h,  v6.8h
+    add         v14.8h, v5.8h,  v3.8h
+    sub         v9.8h,  v5.8h,  v3.8h
+    sub         v13.8h, v10.8h, v2.8h
+    add         v10.8h, v10.8h, v2.8h
+      /* Transpose  q8-q9*/
+    mov         v18.16b,v8.16b
+    trn1        v8.8h, v8.8h,  v9.8h
+    trn2        v9.8h, v18.8h,  v9.8h
+    sub         v11.8h, v12.8h, v1.8h
+    /* Transpose  q14-q15*/
+    mov         v18.16b,v14.16b
+    trn1        v14.8h, v14.8h, v15.8h
+    trn2        v15.8h, v18.8h, v15.8h
+    add         v12.8h, v12.8h, v1.8h
+    /* Transpose  q10-q11*/
+    mov         v18.16b,v10.16b
+    trn1        v10.8h, v10.8h, v11.8h
+    trn2        v11.8h, v18.8h, v11.8h
+    /* Transpose  q12-q13*/
+    mov         v18.16b,v12.16b
+    trn1        v12.8h, v12.8h, v13.8h
+    trn2        v13.8h, v18.8h, v13.8h
+    /* Transpose  q9-q11*/
+    mov         v18.16b,v9.16b
+    trn1        v9.4s, v9.4s,  v11.4s
+    trn2        v11.4s, v18.4s,  v11.4s
+    /* Transpose  q12-q14*/
+    mov         v18.16b,v12.16b
+    trn1        v12.4s, v12.4s, v14.4s
+    trn2        v14.4s, v18.4s, v14.4s
+    /* Transpose  q8-q10*/
+    mov         v18.16b,v8.16b
+    trn1        v8.4s, v8.4s,  v10.4s
+    trn2        v10.4s, v18.4s,  v10.4s
+     /* Transpose  q13-q15*/
+    mov		v18.16b,v13.16b
+    trn1        v13.4s, v13.4s, v15.4s
+    trn2        v15.4s, v18.4s, v15.4s
+    /*vswp      v14.4h, v10-MSB.4h*/
+    umov        x10,v14.d[0]
+    ins         v14.2d[0],v10.2d[1]
+    ins         v10.2d[1],x10
+    /*vswp      v13.4h, v9MSB.4h*/
+
+    umov        x10,v13.d[0]
+    ins         v13.2d[0],v9.2d[1]
+    ins         v9.2d[1],x10
+     /* 1-D IDCT, pass 2 */
+    sub         v2.8h,  v10.8h, v14.8h
+    /*vswp      v15.4h, v11MSB.4h */
+    umov        x10,v15.d[0]
+    ins         v15.2d[0],v11.2d[1]
+    ins         v11.2d[1],x10
+    add         v14.8h, v10.8h, v14.8h
+    /*vswp      v12.4h, v8-MSB.4h*/
+    umov        x10,v12.d[0]
+    ins         v12.2d[0],v8.2d[1]
+    ins         v8.2d[1],x10
+    sub         v1.8h,  v11.8h, v13.8h
+    add         v13.8h, v11.8h, v13.8h
+    sub         v5.8h,  v9.8h,  v15.8h
+    add         v15.8h, v9.8h,  v15.8h
+    sqdmulh     v4.8h,  v2.8h,  XFIX_1_414213562
+    sqdmulh     v6.8h,  v1.8h,  XFIX_2_613125930
+    add         v3.8h,  v1.8h,  v1.8h
+    sub         v1.8h,  v5.8h,  v1.8h
+    add         v10.8h, v2.8h,  v4.8h
+    sqdmulh     v4.8h,  v1.8h,  XFIX_1_847759065
+    sub         v2.8h,  v15.8h, v13.8h
+    add         v3.8h,  v3.8h,  v6.8h
+    sqdmulh     v6.8h,  v2.8h,  XFIX_1_414213562
+    add         v1.8h,  v1.8h,  v4.8h
+    sqdmulh     v4.8h,  v5.8h,  XFIX_1_082392200
+    sub         v10.8h, v10.8h, v14.8h
+    add         v2.8h,  v2.8h,  v6.8h
+    sub         v6.8h,  v8.8h,  v12.8h
+    add         v12.8h, v8.8h,  v12.8h
+    add         v9.8h,  v5.8h,  v4.8h
+    add         v5.8h,  v6.8h,  v10.8h
+    sub         v10.8h, v6.8h,  v10.8h
+    add         v6.8h,  v15.8h, v13.8h
+    add         v8.8h,  v12.8h, v14.8h
+    sub         v3.8h,  v6.8h,  v3.8h
+    sub         v12.8h, v12.8h, v14.8h
+    sub         v3.8h,  v3.8h,  v1.8h
+    sub         v1.8h,  v9.8h,  v1.8h
+    add         v2.8h,  v3.8h,  v2.8h
+    sub         v15.8h, v8.8h,  v6.8h
+    add         v1.8h,  v1.8h,  v2.8h
+    add         v8.8h,  v8.8h,  v6.8h
+    add         v14.8h, v5.8h,  v3.8h
+    sub         v9.8h,  v5.8h,  v3.8h
+    sub         v13.8h, v10.8h, v2.8h
+/*  vpop        {v4.8h-v7.4h} */  /*  restore NEON registers...not available */
+    ld1         {v6.8h},[sp],16
+    ld1         {v4.8h-v5.8h},[sp],32
+    add         v10.8h, v10.8h, v2.8h
+    sub         v11.8h, v12.8h, v1.8h
+    add         v12.8h, v12.8h, v1.8h
+    /* Descale to 8-bit and range limit */
+    movi        v0.16b,  #0x80
+#ifdef RTSM_SQSHRN_SIM_ISSUE
+    sqshrn      v8.8b,  v8.8h, #5
+    sqshrn2     v8.16b, v9.8h, #5
+    sqshrn      v9.8b,  v10.8h, #5
+    sqshrn2     v9.16b, v11.8h, #5
+    sqshrn      v10.8b, v12.8h, #5
+    sqshrn2     v10.16b,v13.8h, #5
+    sqshrn      v11.8b, v14.8h, #5
+    sqshrn2     v11.16b,v15.8h, #5
+#else
+    sqshrn      v8.4h, v8.4s, #5
+    sqshrn2     v8.8h, v9.4s, #5
+    sqshrn      v9.4h, v10.4s, #5
+    sqshrn2     v9.8h, v11.4s, #5
+    sqshrn      v10.4h, v12.4s, #5
+    sqshrn2     v10.8h, v13.4s, #5
+    sqshrn      v11.4h, v14.4s, #5
+    sqshrn2     v11.8h, v15.4s, #5
+#endif
+    add         v8.16b, v8.16b, v0.16b
+    add         v9.16b, v9.16b, v0.16b
+    add         v10.16b, v10.16b, v0.16b
+    add         v11.16b, v11.16b, v0.16b
+    /* Transpose the final 8-bit samples */
+         /* Transpose  q8-q9*/
+    mov		v18.16b,v8.16b
+    trn1        v8.8h, v8.8h, v9.8h
+    trn2        v9.8h, v18.8h, v9.8h
+       /* Transpose  q10-q11*/
+    mov		v18.16b,v10.16b
+    trn1        v10.8h, v10.8h, v11.8h
+    trn2        v11.8h, v18.8h, v11.8h
+        /* Transpose  q8-q10*/
+    mov		v18.16b,v8.16b
+    trn1        v8.4s, v8.4s, v10.4s
+    trn2        v10.4s, v18.4s, v10.4s
+       /* Transpose  q9-q11*/
+    mov		v18.16b,v9.16b
+    trn1        v9.4s, v9.4s, v11.4s
+    trn2        v11.4s, v18.4s, v11.4s
+    /* make copy */
+    ins         v17.2d[0],v8.2d[1]
+      /* Transpose  d16-d17-msb*/
+    mov         v18.16b,v8.16b
+    trn1        v8.8b, v8.8b, v17.8b
+    trn2        v17.8b, v18.8b, v17.8b
+    /* make copy */
+    ins         v19.2d[0],v9.2d[1]
+    mov         v18.16b,v9.16b
+    trn1        v9.8b, v9.8b, v19.8b
+    trn2        v19.8b, v18.8b, v19.8b
+      /* Store results to the output buffer */
+    ldp         TMP1, TMP2, [OUTPUT_BUF],16
+    add         TMP1, TMP1, OUTPUT_COL
+    add         TMP2, TMP2, OUTPUT_COL
+    st1         {v8.8b}, [TMP1]
+    st1         {v17.8b}, [TMP2]
+    ldp         TMP1, TMP2, [OUTPUT_BUF],16
+    add         TMP1, TMP1, OUTPUT_COL
+    add         TMP2, TMP2, OUTPUT_COL
+    st1         {v9.8b}, [TMP1]
+	/* make copy */
+    ins         v21.2d[0],v10.2d[1]
+    mov         v18.16b,v10.16b
+    trn1        v10.8b, v10.8b, v21.8b
+    trn2        v21.8b, v18.8b, v21.8b
+    st1         {v19.8b}, [TMP2]
+    ldp         TMP1, TMP2,[OUTPUT_BUF],16
+    ldp         TMP3, TMP4,[OUTPUT_BUF]
+    add         TMP1, TMP1, OUTPUT_COL
+    add         TMP2, TMP2, OUTPUT_COL
+    add         TMP3, TMP3, OUTPUT_COL
+    add         TMP4, TMP4, OUTPUT_COL
+    st1         {v10.8b}, [TMP1]
+    /* make copy */
+    ins         v23.2d[0],v11.2d[1]
+    mov         v18.16b,v11.16b
+    trn1        v11.8b, v11.8b, v23.8b
+    trn2        v23.8b, v18.8b, v23.8b
+    st1         {v21.8b}, [TMP2]
+    st1         {v11.8b}, [TMP3]
+    st1         {v23.8b}, [TMP4]
+    blr         x30
+
+    .unreq      DCT_TABLE
+    .unreq      COEF_BLOCK
+    .unreq      OUTPUT_BUF
+    .unreq      OUTPUT_COL
+    .unreq      TMP1
+    .unreq      TMP2
+    .unreq      TMP3
+    .unreq      TMP4
+.endfunc
